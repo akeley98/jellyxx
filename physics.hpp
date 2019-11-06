@@ -327,16 +327,11 @@ template <size_t GridWidth>
 void jelly_cube_derivative<GridWidth>::add_friction_dampening(
     const jelly_cube<GridWidth>& cube)
 {
+    // TODO
     for (const node& n : cube.nodes) {
         auto vel = n.velocity;
 
     }
-}
-
-void foo()
-{
-    jelly_cube<15> cube;
-    cube.step_by_dt(.3);
 }
 
 } // end namespace akeley
