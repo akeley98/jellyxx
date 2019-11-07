@@ -18,9 +18,6 @@ constexpr double node_mass = 1.0;
 constexpr double non_floor_dampening = 0.25;
 constexpr double floor_dampening = 1.2;
 
-
-
-
 constexpr double strength_from_temperature(double temperature)
 {
     double lower = 0.3;
@@ -71,14 +68,32 @@ struct spring
 template <size_t GridWidth>
 struct grid_coordinate
 {
-    size_t x;
-    size_t y;
-    size_t z;
+    constexpr static auto narrowest_unsigned_impl()
+    {
+        if constexpr(GridWidth <= 0xFF) {
+            return uint8_t(0);
+        } else if constexpr (GridWidth <= 0xFFFF) {
+            return uint16_t(0);
+        } else if constexpr (GridWidth <= 0xFFFF'FFFF) {
+            return uint32_t(0);
+        } else if constexpr (GridWidth <= 0xFFFF'FFFF'FFFF'FFFF) {
+            return uint64_t(0);
+        } else {
+            typedef unsigned long long ull;
+            return ull(0);
+        }
+    }
+
+    using value_type = decltype(narrowest_unsigned_impl());
+
+    value_type x;
+    value_type y;
+    value_type z;
 
     grid_coordinate(size_t x_, size_t y_, size_t z_) :
-        x(x_),
-        y(y_),
-        z(z_)
+        x(value_type(x_)),
+        y(value_type(y_)),
+        z(value_type(z_))
     {
         assert(x_ <= GridWidth);
         assert(y_ <= GridWidth);
@@ -87,8 +102,8 @@ struct grid_coordinate
 
     size_t to_index() const
     {
-        auto gw1 = GridWidth + 1;
-        return x*gw1*gw1 + y*gw1 + z;
+        size_t gw1 = GridWidth + 1;
+        return x*(gw1*gw1) + y*gw1 + z;
     }
 };
 
@@ -139,7 +154,7 @@ class jelly_cube
                 coord.y / double_grid_width,
                 coord.z / double_grid_width);
         };
-        map_nodes(init_node);
+        map_node_pointers(init_node);
 
         springs_ptr =
             std::make_shared<std::vector<spring>>(make_springs());
@@ -152,7 +167,7 @@ class jelly_cube
     jelly_cube& operator= (const jelly_cube&) = default;
     ~jelly_cube() = default;
 
-    const node& view_node(grid_coordinate<GridWidth> coord)
+    const node& view_node(grid_coordinate<GridWidth> coord) const
     {
         return nodes[coord.to_index()];
     }
@@ -184,7 +199,7 @@ class jelly_cube
     }
 
     template <typename CallableWithNodePointerAndGridCoordinate>
-    void map_nodes(CallableWithNodePointerAndGridCoordinate& f)
+    void map_node_pointers(CallableWithNodePointerAndGridCoordinate& f)
     {
         size_t idx = 0;
         for (size_t x = 0; x <= GridWidth; ++x) {
@@ -198,8 +213,22 @@ class jelly_cube
         }
     }
 
-  private:
+    template <typename CallableWithNodeAndGridCoordinate>
+    void map_nodes(CallableWithNodeAndGridCoordinate& f) const
+    {
+        size_t idx = 0;
+        for (size_t x = 0; x <= GridWidth; ++x) {
+            for (size_t y = 0; y <= GridWidth; ++y) {
+                for (size_t z = 0; z <= GridWidth; ++z, ++idx) {
+                    grid_coordinate<GridWidth> coord(x, y, z);
+                    assert(coord.to_index() == idx);
+                    f(nodes[idx], coord);
+                }
+            }
+        }
+    }
 
+  private:
     static std::vector<spring> make_springs()
     {
         constexpr double edge_spring_k = BaseK;
