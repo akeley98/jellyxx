@@ -18,9 +18,6 @@ constexpr double node_mass = 1.0;
 constexpr double non_floor_dampening = 0.25;
 constexpr double floor_dampening = 1.2;
 
-constexpr double edge_spring_k = base_k;
-constexpr double face_spring_k = base_k * 2.0;
-constexpr double inner_spring_k = base_k * 3.0;
 
 
 
@@ -95,43 +92,19 @@ struct grid_coordinate
     }
 };
 
-template <size_t GridWidth>
-constexpr size_t cube_node_count =
-    (GridWidth+1) * (GridWidth+1) * (GridWidth+1);
-
-template <size_t GridWidth> class jelly_cube;
-
-template <size_t GridWidth>
-struct jelly_cube_derivative
-{
-    friend class jelly_cube<GridWidth>;
-    static constexpr size_t node_count = cube_node_count<GridWidth>;
-
-    std::array<simd_dvec3, node_count> position_derivative;
-    std::array<simd_dvec3, node_count> velocity_derivative;
-
-    void add_spring_velocity_derivative(const jelly_cube<GridWidth>&, spring);
-    void add_cell_velocity_derivative(
-        const jelly_cube<GridWidth>&,
-        grid_coordinate<GridWidth>);
-    void add_friction_dampening(const jelly_cube<GridWidth>&);
-
-    jelly_cube_derivative operator* (double scale)
-    {
-        jelly_cube_derivative result;
-        for (size_t i = 0; i < node_count; ++i) {
-            result.position_derivative[i] = scale * position_derivative[i];
-            result.velocity_derivative[i] = scale * velocity_derivative[i];
-        }
-        return result;
-    }
-};
-
-template <size_t GridWidth>
+template <
+    size_t GridWidth,
+    size_t BaseK,
+    size_t NodeMassNumerator,
+    size_t NodeMassDenominator>
 class jelly_cube
 {
-    friend class jelly_cube_derivative<GridWidth>;
-    static constexpr size_t node_count = cube_node_count<GridWidth>;
+    static constexpr size_t node_count =
+        (GridWidth+1) * (GridWidth+1) * (GridWidth+1);
+    static constexpr double node_mass =
+        NodeMassNumerator / double(NodeMassDenominator);
+    static constexpr double node_mass_recip =
+        NodeMassDenominator / double(NodeMassNumerator);
 
     std::array<node, node_count> nodes;
     std::shared_ptr<const std::vector<spring>> springs_ptr;
@@ -139,9 +112,35 @@ class jelly_cube
     // GridWidth; can be replaced with a constexpr std::vector in C++20.
 
   public:
+    struct derivative
+    {
+        std::array<simd_dvec3, node_count> position_derivative;
+        std::array<simd_dvec3, node_count> velocity_derivative;
+
+        derivative operator* (double scale)
+        {
+            derivative result;
+            for (size_t i = 0; i < node_count; ++i) {
+                result.position_derivative[i] = scale * position_derivative[i];
+                result.velocity_derivative[i] = scale * velocity_derivative[i];
+            }
+            return result;
+        }
+    };
+
     jelly_cube()
     {
-        init_node_positions(&nodes);
+        double double_grid_width = GridWidth;
+        auto init_node =
+        [double_grid_width] (node* n, grid_coordinate<GridWidth> coord)
+        {
+            n->position = simd_dvec3(
+                coord.x / double_grid_width,
+                coord.y / double_grid_width,
+                coord.z / double_grid_width);
+        };
+        map_nodes(init_node);
+
         springs_ptr =
             std::make_shared<std::vector<spring>>(make_springs());
     }
@@ -168,14 +167,14 @@ class jelly_cube
         enforce_floor();
     }
 
-    jelly_cube operator+ (const jelly_cube_derivative<GridWidth>& deriv) const
+    jelly_cube operator+ (const derivative& deriv) const
     {
         jelly_cube result = *this;
         return result += deriv;
     }
 
     jelly_cube&
-    operator+= (const jelly_cube_derivative<GridWidth>& deriv) noexcept
+    operator+= (const derivative& deriv) noexcept
     {
         for (size_t i = 0; i < node_count; ++i) {
             nodes[i].position += deriv.position_derivative[i];
@@ -184,27 +183,29 @@ class jelly_cube
         return *this;
     }
 
-  private:
-    static void init_node_positions(std::array<node, node_count>* nodes_ptr)
+    template <typename CallableWithNodePointerAndGridCoordinate>
+    void map_nodes(CallableWithNodePointerAndGridCoordinate& f)
     {
-        auto& nodes = *nodes_ptr;
-        double double_grid_width = GridWidth;
+        size_t idx = 0;
         for (size_t x = 0; x <= GridWidth; ++x) {
             for (size_t y = 0; y <= GridWidth; ++y) {
-                for (size_t z = 0; z <= GridWidth; ++z) {
+                for (size_t z = 0; z <= GridWidth; ++z, ++idx) {
                     grid_coordinate<GridWidth> coord(x, y, z);
-                    size_t index = coord.to_index();
-                    nodes[index].position = simd_dvec3(
-                        double_grid_width / x,
-                        double_grid_width / y,
-                        double_grid_width / z);
+                    assert(coord.to_index() == idx);
+                    f(&nodes[idx], coord);
                 }
             }
         }
     }
 
+  private:
+
     static std::vector<spring> make_springs()
     {
+        constexpr double edge_spring_k = BaseK;
+        constexpr double face_spring_k = BaseK * 2.0;
+        constexpr double inner_spring_k = BaseK * 3.0;
+
         std::vector<spring> springs;
         auto to_index = [] (size_t x, size_t y, size_t z)
         {
@@ -267,10 +268,10 @@ class jelly_cube
         }
     }
 
-    static jelly_cube_derivative<GridWidth>
+    static derivative
     calculate_derivative(const jelly_cube& arg)
     {
-        jelly_cube_derivative<GridWidth> result;
+        derivative result;
 
         for (size_t i = 0; i < node_count; ++i) {
             result.position_derivative[i] = arg.nodes[i].velocity;
@@ -278,61 +279,53 @@ class jelly_cube
         }
 
         for (const spring& the_spring : *arg.springs_ptr) {
-            result.add_spring_velocity_derivative(arg, the_spring);
+            arg.add_spring_force_derivative(&result, the_spring);
         }
 
         for (size_t x = 0; x < GridWidth; ++x) {
             for (size_t y = 0; y < GridWidth; ++y) {
                 for (size_t z = 0; z < GridWidth; ++z) {
-                    result.add_cell_velocity_derivative(arg, {x, y, z});
+                    arg.add_cell_pressure_derivative(&result, {x, y, z});
                 }
             }
         }
 
-        result.add_friction_dampening(arg);
+        arg.add_friction_dampening_derivative(&result);
 
         return result;
     }
-};
 
-template <size_t GridWidth>
-void jelly_cube_derivative<GridWidth>::add_spring_velocity_derivative(
-    const jelly_cube<GridWidth>& cube,
-    spring the_spring)
-{
-    const node& node_0 = cube.nodes.at(the_spring.node_index_0);
-    const node& node_1 = cube.nodes.at(the_spring.node_index_1);
+    void add_spring_force_derivative(
+        derivative* deriv,
+        spring the_spring) const
+    {
+        const node& node_0 = nodes.at(the_spring.node_index_0);
+        const node& node_1 = nodes.at(the_spring.node_index_1);
 
-    double distance;
-    simd_dvec3 displacement = node_1.position - node_0.position;
-    simd_dvec3 unit_displacement = normalize(displacement, &distance);
-    auto kX = the_spring.spec.k * (distance - the_spring.spec.length);
-    auto force = kX * node_0.strength * node_1.strength;
-    auto accel = force * (1.0 / node_mass);
-    simd_dvec3 added_vector = accel * unit_displacement;
+        double distance;
+        simd_dvec3 displacement = node_1.position - node_0.position;
+        simd_dvec3 unit_displacement = normalize(displacement, &distance);
+        auto kX = the_spring.spec.k * (distance - the_spring.spec.length);
+        auto force = kX * node_0.strength * node_1.strength;
+        auto accel = force * node_mass_recip;
+        simd_dvec3 added_vector = accel * unit_displacement;
 
-    velocity_derivative[the_spring.node_index_0] += added_vector;
-    velocity_derivative[the_spring.node_index_1] -= added_vector;
-}
-
-template <size_t GridWidth>
-void jelly_cube_derivative<GridWidth>::add_cell_velocity_derivative(
-    const jelly_cube<GridWidth>& cube,
-    grid_coordinate<GridWidth> coord)
-{
-    // TODO
-}
-
-template <size_t GridWidth>
-void jelly_cube_derivative<GridWidth>::add_friction_dampening(
-    const jelly_cube<GridWidth>& cube)
-{
-    // TODO
-    for (const node& n : cube.nodes) {
-        auto vel = n.velocity;
-
+        deriv->velocity_derivative[the_spring.node_index_0] += added_vector;
+        deriv->velocity_derivative[the_spring.node_index_1] -= added_vector;
     }
-}
+
+    void add_cell_pressure_derivative(
+        derivative* deriv,
+        grid_coordinate<GridWidth> coord) const
+    {
+        // TODO
+    }
+
+    void add_friction_dampening_derivative(derivative* deriv) const
+    {
+        // TODO
+    }
+};
 
 } // end namespace akeley
 
