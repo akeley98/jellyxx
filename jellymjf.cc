@@ -29,7 +29,7 @@ static inline Vec3 vec3(simd_dvec3 v)
 
 constexpr size_t grid_width = GRID_WIDTH;
 
-static jelly_cube<grid_width, 400, 1, 1> global_jelly_cube;
+static jelly_cube<grid_width, 1000, 1, 1> global_jelly_cube;
 using grid_coordinate = decltype(global_jelly_cube)::grid_coordinate;
 
 struct bead

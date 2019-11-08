@@ -14,8 +14,8 @@ namespace akeley {
 constexpr double gravity = 1.5;
 constexpr double ambient_temperature = 20.0;
 constexpr double node_mass = 1.0;
-constexpr double non_floor_dampening = 8;
-constexpr double floor_dampening = 10;
+constexpr double non_floor_dampening = 11;
+constexpr double floor_dampening = 11;
 
 constexpr double strength_from_temperature(double temperature)
 {
@@ -250,8 +250,8 @@ class jelly_cube
     static std::vector<spring> make_springs()
     {
         constexpr double edge_spring_k = BaseK;
-        constexpr double face_spring_k = BaseK * 0.85;
-        constexpr double inner_spring_k = BaseK * 0.7;
+        constexpr double face_spring_k = BaseK * 1.4142135623730951;
+        constexpr double inner_spring_k = BaseK * 1.7320508075688772;
 
         std::vector<spring> springs;
         auto to_index = [] (size_t x, size_t y, size_t z)
@@ -367,7 +367,16 @@ class jelly_cube
         double distance;
         simd_dvec3 displacement = node_1.position - node_0.position;
         simd_dvec3 unit_displacement = normalize(displacement, &distance);
-        auto kX = the_spring.spec.k * (distance - the_spring.spec.length);
+        auto stretch_distance = distance - the_spring.spec.length;
+        
+        auto fudge_distance = 0.04 / GridWidth;
+        if (stretch_distance > 0) {
+            stretch_distance = std::max(0.0, stretch_distance - fudge_distance);
+        } else {
+            stretch_distance = std::min(0.0, stretch_distance + fudge_distance);
+        }
+        
+        auto kX = the_spring.spec.k * stretch_distance;
         auto force = kX * node_0.strength * node_1.strength;
         auto accel = force * node_mass_recip;
         simd_dvec3 added_vector = accel * unit_displacement;
@@ -377,9 +386,17 @@ class jelly_cube
     }
 
     /*  Calculate a cell's pressure given its volume */
-    static inline float pressure(float volume) {
-        float stretch = volume * (GridWidth * GridWidth * GridWidth);
-        return clamp_float(1.0f-stretch, -1.0f, 1.0f) * 10000.0f;
+    static inline float pressure(double volume) {
+        double stretch = volume * (GridWidth * GridWidth * GridWidth);
+        double stretch_fudge = 0.06;
+        
+        if (stretch > 1) {
+            stretch = std::max(1.0, stretch - stretch_fudge);
+        } else {
+            stretch = std::min(1.0, stretch + stretch_fudge);
+        }
+        
+        return clamp_float(1 - stretch, -1, +1) * 80000.0f;
     }
 
     void add_cell_pressure_derivative(
