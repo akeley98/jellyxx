@@ -2,6 +2,7 @@
 // To be fair, this does more than just "adapt", since the old interface also
 // required some OpenGL helper functions (make elements array, normals, etc.)
 // and all this bead logic.
+#include <algorithm>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -28,7 +29,7 @@ static inline Vec3 vec3(simd_dvec3 v)
 
 constexpr size_t grid_width = GRID_WIDTH;
 
-static jelly_cube<grid_width, 1000, 1, 1> global_jelly_cube;
+static jelly_cube<grid_width, 400, 1, 1> global_jelly_cube;
 using grid_coordinate = decltype(global_jelly_cube)::grid_coordinate;
 
 struct bead
@@ -234,7 +235,8 @@ static simd_dvec3 get_cube_center()
 }
 
 // Update the global camera_center 3-vector with the average position
-// the global cube's center was the last 600 times this was called.
+// the global cube's center was the last (up to) 600 times this was
+// called.
 static void update_camera_center()
 {
     constexpr size_t max_sample_count = 600;
@@ -245,12 +247,11 @@ static void update_camera_center()
 
     simd_dvec3 this_tick_center = get_cube_center();
     samples[idx++] = this_tick_center;
-    sample_count++;
+    sample_count = std::min(sample_count+1, max_sample_count);
 
     if (idx >= max_sample_count)
     {
         idx = 0;
-        sample_count = max_sample_count;
     }
     
     simd_dvec3 total(0, 0, 0);
@@ -584,3 +585,7 @@ BeadVertex const* update_debug_bead_vertices(void) {
     return array;
 }
 
+void hack_zero_velocities()
+{
+    global_jelly_cube.hack_zero_velocities();
+}

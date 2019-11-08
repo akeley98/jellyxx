@@ -758,6 +758,8 @@ static void initialize_beads_and_cube(void) {
     }
 }
 
+static bool paused = false;
+
 static bool handle_controls(float dt) {
     static bool orbit_mode = true;
     static bool w, a, s, d, q, e, space;
@@ -778,6 +780,8 @@ static bool handle_controls(float dt) {
               break; case SDL_SCANCODE_D: case SDL_SCANCODE_L: d = true;
               break; case SDL_SCANCODE_Q: case SDL_SCANCODE_U: q = true;
               break; case SDL_SCANCODE_E: case SDL_SCANCODE_O: e = true;
+              break; case SDL_SCANCODE_1: paused = !paused;
+              break; case SDL_SCANCODE_2: hack_zero_velocities();
               break; case SDL_SCANCODE_SPACE: space = true;
               
               break; case SDL_SCANCODE_X: case SDL_SCANCODE_COMMA:
@@ -917,11 +921,11 @@ int main(int, char** argv) {
     initialize_beads_and_cube();
     
     while (no_quit) {
-        // Update physics 125 times per second (in 125 batches of 1 updates).
+        // Update physics 375 times per second (in 125 batches of 3 updates).
         static uint32_t previous_update = 0;
         uint32_t current_ticks = SDL_GetTicks();
         if (current_ticks >= previous_update + 8) {
-            for (int i = 0; i < 1; ++i) tick(1/125.);
+            for (int i = 0; i < 3; ++i) if (!paused) tick(1/375.);
             previous_update += 8;
             if (previous_update + 8 < current_ticks) {
                 previous_update = current_ticks;

@@ -53,6 +53,8 @@ BeadVertex const* update_bead_vertices(void);
 int get_debug_bead_count(void);
 BeadVertex const* update_debug_bead_vertices(void);
 
+void hack_zero_velocities();
+
 #ifdef __cplusplus
 }
 #endif

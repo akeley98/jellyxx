@@ -12,11 +12,10 @@
 namespace akeley {
 
 constexpr double gravity = 1.5;
-constexpr double base_k = 1000.0;
 constexpr double ambient_temperature = 20.0;
 constexpr double node_mass = 1.0;
-constexpr double non_floor_dampening = 0.25;
-constexpr double floor_dampening = 1.2;
+constexpr double non_floor_dampening = 8;
+constexpr double floor_dampening = 10;
 
 constexpr double strength_from_temperature(double temperature)
 {
@@ -152,16 +151,26 @@ class jelly_cube
         reset();
     }
 
+    void hack_zero_velocities()
+    {
+        auto set_to_zero_velocity = [] (node* n, grid_coordinate)
+        { n->velocity = simd_dvec3(0, 0, 0); };
+
+        map_node_pointers(set_to_zero_velocity);
+    }
+
     void reset()
     {
         double double_grid_width = GridWidth;
         auto init_node =
         [double_grid_width] (node* n, grid_coordinate coord)
         {
-            n->position = simd_dvec3(
+            node new_node;
+            new_node.position = simd_dvec3(
                 coord.x / double_grid_width,
                 coord.y / double_grid_width,
                 coord.z / double_grid_width);
+            *n = new_node;
         };
         map_node_pointers(init_node);
     }
@@ -186,6 +195,9 @@ class jelly_cube
     {
         *this = rk4_step(*this, calculate_derivative, dt);
         enforce_floor();
+
+        auto vel = get_node( { GridWidth, GridWidth, GridWidth } ).velocity;
+        printf("%f %f %f\n", X(vel), Y(vel), Z(vel));
     }
 
     jelly_cube operator+ (const derivative& deriv) const
@@ -238,8 +250,8 @@ class jelly_cube
     static std::vector<spring> make_springs()
     {
         constexpr double edge_spring_k = BaseK;
-        constexpr double face_spring_k = BaseK * 2.0;
-        constexpr double inner_spring_k = BaseK * 3.0;
+        constexpr double face_spring_k = BaseK * 0.85;
+        constexpr double inner_spring_k = BaseK * 0.7;
 
         std::vector<spring> springs;
         auto to_index = [] (size_t x, size_t y, size_t z)
@@ -251,13 +263,22 @@ class jelly_cube
             face_spring { face_spring_k, 1.4142135623730951 / GridWidth },
             inner_spring { inner_spring_k, 1.7320508075688772 / GridWidth };
 
-        auto maybe_push_spring = [&springs, to_index]
-        (size_t idx0, size_t x, size_t y, size_t z, spring_spec spec)
+        auto maybe_push = [&springs, to_index] (
+            size_t x0,
+            size_t y0,
+            size_t z0,
+            size_t x1,
+            size_t y1,
+            size_t z1,
+            spring_spec spec)
         {
-            if (x > GridWidth || y > GridWidth || z > GridWidth) {
+            if (x0 > GridWidth || y0 > GridWidth || z0 > GridWidth) {
                 return;
             }
-            spring spr { idx0, to_index(x, y, z) , spec };
+            if (x1 > GridWidth || y1 > GridWidth || z1 > GridWidth) {
+                return;
+            }
+            spring spr { to_index(x0, y0, z0), to_index(x1, y1, z1) , spec };
             springs.push_back(spr);
         };
 
@@ -270,18 +291,24 @@ class jelly_cube
                 horizontal_edge_spring.length + displacement_needed };
         };
 
-        for (size_t x = 0; x < GridWidth; ++x) {
-            for (size_t y = 0; y < GridWidth; ++y) {
-                for (size_t z = 0; z < GridWidth; ++z) {
-                    size_t idx0 = to_index(x, y, z);
+        for (size_t x = 0; x <= GridWidth; ++x) {
+            for (size_t y = 0; y <= GridWidth; ++y) {
+                for (size_t z = 0; z <= GridWidth; ++z) {
+                    maybe_push(x, y, z, x, y, z+1, horizontal_edge_spring);
+                    maybe_push(x, y, z, x, y+1, z, vertical_edge_spring(y));
+                    maybe_push(x, y, z, x+1, y, z, horizontal_edge_spring);
 
-                    maybe_push_spring(idx0, x, y, z+1, horizontal_edge_spring);
-                    maybe_push_spring(idx0, x, y+1, z, vertical_edge_spring(y));
-                    maybe_push_spring(idx0, x+1, y, z, horizontal_edge_spring);
-                    maybe_push_spring(idx0, x+1, y+1, z, face_spring);
-                    maybe_push_spring(idx0, x+1, y, z+1, face_spring);
-                    maybe_push_spring(idx0, x, y+1, z+1, face_spring);
-                    maybe_push_spring(idx0, x+1, y+1, z+1, inner_spring);
+                    maybe_push(x, y, z, x+1, y+1, z, face_spring);
+                    maybe_push(x+1, y, z, x, y+1, z, face_spring);
+                    maybe_push(x, y, z, x+1, y, z+1, face_spring);
+                    maybe_push(x+1, y, z, x, y, z+1, face_spring);
+                    maybe_push(x, y, z, x, y+1, z+1, face_spring);
+                    maybe_push(x, y+1, z, x, y, z+1, face_spring);
+
+                    maybe_push(x, y, z, x+1, y+1, z+1, inner_spring);
+                    maybe_push(x+1, y, z, x, y+1, z+1, inner_spring);
+                    maybe_push(x, y+1, z, x+1, y, z+1, inner_spring);
+                    maybe_push(x, y, z+1, x+1, y+1, z, inner_spring);
                 }
             }
         }
@@ -349,16 +376,158 @@ class jelly_cube
         deriv->velocity_derivative[the_spring.node_index_1] -= added_vector;
     }
 
+    /*  Calculate a cell's pressure given its volume */
+    static inline float pressure(float volume) {
+        float stretch = volume * (GridWidth * GridWidth * GridWidth);
+        return clamp_float(1.0f-stretch, -1.0f, 1.0f) * 10000.0f;
+    }
+
     void add_cell_pressure_derivative(
         derivative* deriv,
         grid_coordinate coord) const
     {
-        // TODO
+        auto x = coord.x;
+        auto y = coord.y;
+        auto z = coord.z;
+
+        simd_dvec3 p000 = get_node( { x, y, z } ).position;
+        simd_dvec3 p001 = get_node( { x, y, z+1u } ).position;
+        simd_dvec3 p010 = get_node( { x, y+1u, z } ).position;
+        simd_dvec3 p011 = get_node( { x, y+1u, z+1u } ).position;
+        simd_dvec3 p100 = get_node( { x+1u, y, z } ).position;
+        simd_dvec3 p101 = get_node( { x+1u, y, z+1u } ).position;
+        simd_dvec3 p110 = get_node( { x+1u, y+1u, z } ).position;
+        simd_dvec3 p111 = get_node( { x+1u, y+1u, z+1u } ).position;
+
+        auto ref_dv_vector = [deriv] (size_t x, size_t y, size_t z)
+        -> simd_dvec3&
+        {
+            size_t index = grid_coordinate(x, y, z).to_index();
+            return deriv->velocity_derivative[index];
+        };
+
+        // velocity derivative vectors (to modify) corresponding to above nodes.
+        simd_dvec3& accel000 = ref_dv_vector(x, y, z);
+        simd_dvec3& accel001 = ref_dv_vector(x, y, z+1);
+        simd_dvec3& accel010 = ref_dv_vector(x, y+1, z);
+        simd_dvec3& accel011 = ref_dv_vector(x, y+1, z+1);
+        simd_dvec3& accel100 = ref_dv_vector(x+1, y, z);
+        simd_dvec3& accel101 = ref_dv_vector(x+1, y, z+1);
+        simd_dvec3& accel110 = ref_dv_vector(x+1, y+1, z);
+        simd_dvec3& accel111 = ref_dv_vector(x+1, y+1, z+1);
+
+        // Vectors from node[x][y][z] to the other 7 nodes.
+        simd_dvec3 v000_001 = p001 - p000;
+        simd_dvec3 v000_011 = p011 - p000;
+        simd_dvec3 v000_010 = p010 - p000;
+        simd_dvec3 v000_110 = p110 - p000;
+        simd_dvec3 v000_100 = p100 - p000;
+        simd_dvec3 v000_101 = p101 - p000;
+        simd_dvec3 v000_111 = p111 - p000;
+
+        // Paralellogram vectors for 6 triangles around node 000.
+        simd_dvec3 pvec_000_001_011 = cross(v000_001, v000_011);
+        simd_dvec3 pvec_000_011_010 = cross(v000_011, v000_010);
+        simd_dvec3 pvec_000_010_110 = cross(v000_010, v000_110);
+        simd_dvec3 pvec_000_110_100 = cross(v000_110, v000_100);
+        simd_dvec3 pvec_000_100_101 = cross(v000_100, v000_101);
+        simd_dvec3 pvec_000_101_001 = cross(v000_101, v000_001);
+
+        // Sum of the dot products using less-than-obvious algorithm.
+        auto s =   elementwise_mul(v000_111, pvec_000_001_011);
+        auto t =   elementwise_mul(v000_111, pvec_000_011_010);
+        s = s + elementwise_mul(v000_111, pvec_000_010_110);
+        t = t + elementwise_mul(v000_111, pvec_000_110_100);
+        s = s + elementwise_mul(v000_111, pvec_000_100_101);
+        t = t + elementwise_mul(v000_111, pvec_000_101_001);
+        simd_dvec3 SS = s + t;
+
+        const float volume = (-1.0/6.0) * (X(SS) + Y(SS) + Z(SS));
+        const float quarter_pressure = 0.25f * pressure(volume);
+
+        // Add forces onto the 3 nodes of each triangle. The right-angle node
+        // (across from hypotenuse) gets 1/2 of the force and gets added first.
+        // The other two nodes come next and get 1/4 each.
+        simd_dvec3 accel0, accel1;
+
+        accel001 += (accel0 = quarter_pressure * node_mass_recip * pvec_000_001_011);
+        accel011 += (accel0 = 0.5 * accel0);
+        accel000 += accel0;
+
+        accel010 += (accel1 = quarter_pressure * node_mass_recip * pvec_000_011_010);
+        accel011 += (accel1 = 0.5 * accel1);
+        accel000 += accel1;
+
+        accel010 += (accel0 = quarter_pressure * node_mass_recip * pvec_000_010_110);
+        accel110 += (accel0 = 0.5 * accel0);
+        accel000 += accel0;
+
+        accel100 += (accel1 = quarter_pressure * node_mass_recip * pvec_000_110_100);
+        accel110 += (accel1 = 0.5 * accel1);
+        accel000 += accel1;
+
+        accel100 += (accel0 = quarter_pressure * node_mass_recip * pvec_000_100_101);
+        accel101 += (accel0 = 0.5 * accel0);
+        accel000 += accel0;
+
+        accel001 += (accel1 = quarter_pressure * node_mass_recip * pvec_000_101_001);
+        accel101 += (accel1 = 0.5 * accel1);
+        accel000 += accel1;
+
+        // Now add pressure force for the other 6 triangles. I hope that
+        // the compiler(s) used have a good register allocation strategy.
+        simd_dvec3 v111_001 = p001 - p111;
+        simd_dvec3 v111_011 = p011 - p111;
+        simd_dvec3 v111_010 = p010 - p111;
+        simd_dvec3 v111_110 = p110 - p111;
+        simd_dvec3 v111_100 = p100 - p111;
+        simd_dvec3 v111_101 = p101 - p111;
+
+        simd_dvec3 pvec_111_001_101 = cross(v111_001, v111_101);
+        simd_dvec3 pvec_111_101_100 = cross(v111_101, v111_100);
+        simd_dvec3 pvec_111_100_110 = cross(v111_100, v111_110);
+        simd_dvec3 pvec_111_110_010 = cross(v111_110, v111_010);
+        simd_dvec3 pvec_111_010_011 = cross(v111_010, v111_011);
+        simd_dvec3 pvec_111_011_001 = cross(v111_011, v111_001);
+
+        accel101 += (accel0 = quarter_pressure * node_mass_recip * pvec_111_001_101);
+        accel001 += (accel0 = 0.5 * accel0);
+        accel111 += accel0;
+
+        accel101 += (accel1 = quarter_pressure * node_mass_recip * pvec_111_101_100);
+        accel100 += (accel1 = 0.5 * accel1);
+        accel111 += accel1;
+
+        accel110 += (accel0 = quarter_pressure * node_mass_recip * pvec_111_100_110);
+        accel100 += (accel0 = 0.5 * accel0);
+        accel111 += accel0;
+
+        accel110 += (accel1 = quarter_pressure * node_mass_recip * pvec_111_110_010);
+        accel010 += (accel1 = 0.5 * accel1);
+        accel111 += accel1;
+
+        accel011 += (accel0 = quarter_pressure * node_mass_recip * pvec_111_010_011);
+        accel010 += (accel0 = 0.5 * accel0);
+        accel111 += accel0;
+
+        accel011 += (accel1 = quarter_pressure * node_mass_recip * pvec_111_011_001);
+        accel001 += (accel1 = 0.5 * accel1);
+        accel111 += accel1;
     }
 
     void add_friction_dampening_derivative(derivative* deriv) const
     {
-        // TODO
+        auto add_dampening = [deriv] (const node& n, grid_coordinate coord)
+        {
+            double dampening = Y(n.position) <= 0
+                ? floor_dampening
+                : non_floor_dampening;
+
+            simd_dvec3 dv = -dampening * n.velocity;
+            deriv->velocity_derivative[coord.to_index()] += dv;
+        };
+
+        map_nodes(add_dampening);
     }
 };
 
