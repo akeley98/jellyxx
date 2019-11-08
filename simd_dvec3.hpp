@@ -163,9 +163,9 @@ static inline int is_real(simd_dvec3 a) {
     return (X(z) == 0 && Y(z) == 0 && Z(z) == 0);
 }
 
-#else // No AVX fallback
+#else
 
-#error // !!!
+#error Need AVX support for SIMD dvec3
 
 struct simd_dvec3 {
     double x, y, z, pad;
