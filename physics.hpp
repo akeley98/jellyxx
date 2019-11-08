@@ -66,7 +66,7 @@ struct spring
 };
 
 template <size_t GridWidth>
-struct grid_coordinate
+struct grid_coordinate_t
 {
     constexpr static auto narrowest_unsigned_impl()
     {
@@ -90,7 +90,7 @@ struct grid_coordinate
     value_type y;
     value_type z;
 
-    grid_coordinate(size_t x_, size_t y_, size_t z_) :
+    grid_coordinate_t(size_t x_, size_t y_, size_t z_) :
         x(value_type(x_)),
         y(value_type(y_)),
         z(value_type(z_))
@@ -143,11 +143,20 @@ class jelly_cube
         }
     };
 
+    using grid_coordinate = grid_coordinate_t<GridWidth>;
+
     jelly_cube()
+    {
+        springs_ptr =
+            std::make_shared<std::vector<spring>>(make_springs());
+        reset();
+    }
+
+    void reset()
     {
         double double_grid_width = GridWidth;
         auto init_node =
-        [double_grid_width] (node* n, grid_coordinate<GridWidth> coord)
+        [double_grid_width] (node* n, grid_coordinate coord)
         {
             n->position = simd_dvec3(
                 coord.x / double_grid_width,
@@ -155,9 +164,6 @@ class jelly_cube
                 coord.z / double_grid_width);
         };
         map_node_pointers(init_node);
-
-        springs_ptr =
-            std::make_shared<std::vector<spring>>(make_springs());
     }
 
     // Get rid of the move constructor to avoid null shared_ptr
@@ -167,13 +173,13 @@ class jelly_cube
     jelly_cube& operator= (const jelly_cube&) = default;
     ~jelly_cube() = default;
 
-    const node& view_node(grid_coordinate<GridWidth> coord) const
+    const node& get_node(grid_coordinate coord) const
     {
         return nodes[coord.to_index()];
     }
 
-    node* get_node(grid_coordinate<GridWidth> coord) {
-        return const_cast<node*>(&view_node(coord));
+    node* view_node(grid_coordinate coord) {
+        return const_cast<node*>(&get_node(coord));
     }
 
     void step_by_dt(double dt)
@@ -205,7 +211,7 @@ class jelly_cube
         for (size_t x = 0; x <= GridWidth; ++x) {
             for (size_t y = 0; y <= GridWidth; ++y) {
                 for (size_t z = 0; z <= GridWidth; ++z, ++idx) {
-                    grid_coordinate<GridWidth> coord(x, y, z);
+                    grid_coordinate coord(x, y, z);
                     assert(coord.to_index() == idx);
                     f(&nodes[idx], coord);
                 }
@@ -220,7 +226,7 @@ class jelly_cube
         for (size_t x = 0; x <= GridWidth; ++x) {
             for (size_t y = 0; y <= GridWidth; ++y) {
                 for (size_t z = 0; z <= GridWidth; ++z, ++idx) {
-                    grid_coordinate<GridWidth> coord(x, y, z);
+                    grid_coordinate coord(x, y, z);
                     assert(coord.to_index() == idx);
                     f(nodes[idx], coord);
                 }
@@ -238,7 +244,7 @@ class jelly_cube
         std::vector<spring> springs;
         auto to_index = [] (size_t x, size_t y, size_t z)
         {
-            return grid_coordinate<GridWidth>(x, y, z).to_index();
+            return grid_coordinate(x, y, z).to_index();
         };
 
         spring_spec horizontal_edge_spring { edge_spring_k, 1.0 / GridWidth },
@@ -345,7 +351,7 @@ class jelly_cube
 
     void add_cell_pressure_derivative(
         derivative* deriv,
-        grid_coordinate<GridWidth> coord) const
+        grid_coordinate coord) const
     {
         // TODO
     }
